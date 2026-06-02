@@ -9,7 +9,9 @@
 using namespace sf;
 using namespace std;
 
-// ---------------- TIMEZONE ----------------
+// ============================================================
+// TIMEZONE: stores name and how many hours/minutes ahead of UTC
+// ============================================================
 struct TimeZone
 {
     string name;
@@ -17,127 +19,159 @@ struct TimeZone
     int minOffset;
 };
 
-vector<TimeZone> zones = {
+// List of timezones we support
+vector<TimeZone> timezones = {
     {"Nepal", 5, 45},
     {"India", 5, 30},
     {"UTC", 0, 0},
     {"UK", 0, 0}};
 
-// ---------------- STOPWATCH ----------------
+// ============================================================
+// STOPWATCH: tracks elapsed time, can be started/stopped/reset
+// ============================================================
 class Stopwatch
 {
     Clock clock;
     bool running = false;
-    Time elapsedBefore;
+    Time savedTime; // time accumulated before the last pause
 
 public:
+    // Start if stopped, pause if running
     void toggle()
     {
         if (running)
         {
-            elapsedBefore += clock.getElapsedTime();
+            savedTime += clock.getElapsedTime(); // save progress
             running = false;
         }
         else
         {
-            clock.restart();
+            clock.restart(); // start counting fresh
             running = true;
         }
     }
 
+    // Reset everything to zero
     void reset()
     {
-        elapsedBefore = Time::Zero;
+        savedTime = Time::Zero;
         clock.restart();
         running = false;
     }
 
-    Time getTime()
+    // Get total elapsed time
+    Time getElapsed()
     {
         if (running)
-            return elapsedBefore + clock.getElapsedTime();
-        return elapsedBefore;
+            return savedTime + clock.getElapsedTime();
+        return savedTime;
     }
 };
 
-// ---------------- FORMAT ----------------
-string formatTime(TimeZone tz, bool stopwatchMode, Time swTime)
+// ============================================================
+// FORMAT TIME: returns a "HH:MM:SS" string
+// If stopwatchMode is true, formats stopwatch time instead
+// ============================================================
+string formatTime(TimeZone tz, bool stopwatchMode, Time stopwatchTime)
 {
-    time_t now = time(nullptr);
-    tm *local = gmtime(&now);
-
-    local->tm_hour += tz.hourOffset;
-    local->tm_min += tz.minOffset;
-    mktime(local);
-
-    stringstream ss;
-
-    if (!stopwatchMode)
+    if (stopwatchMode)
     {
-        ss << setfill('0')
-           << setw(2) << local->tm_hour << ":"
-           << setw(2) << local->tm_min << ":"
-           << setw(2) << local->tm_sec;
-    }
-    else
-    {
-        int total = (int)swTime.asSeconds();
-        int h = total / 3600;
-        int m = (total % 3600) / 60;
-        int s = total % 60;
+        // Format stopwatch as HH:MM:SS
+        int totalSeconds = (int)stopwatchTime.asSeconds();
+        int h = totalSeconds / 3600;
+        int m = (totalSeconds % 3600) / 60;
+        int s = totalSeconds % 60;
 
+        stringstream ss;
         ss << setfill('0')
            << setw(2) << h << ":"
            << setw(2) << m << ":"
            << setw(2) << s;
+        return ss.str();
     }
 
+    // Get current UTC time and apply timezone offset
+    time_t now = time(nullptr);
+    tm *localTime = gmtime(&now);
+    localTime->tm_hour += tz.hourOffset;
+    localTime->tm_min += tz.minOffset;
+    mktime(localTime); // fix overflow (e.g. 63 minutes → 1h 3m)
+
+    stringstream ss;
+    ss << setfill('0')
+       << setw(2) << localTime->tm_hour << ":"
+       << setw(2) << localTime->tm_min << ":"
+       << setw(2) << localTime->tm_sec;
     return ss.str();
 }
 
-// ---------------- MAIN ----------------
+// ============================================================
+// DRAW HAND: draws a clock hand as a rotated rectangle
+// angle = degrees, length = how long the hand is
+// ============================================================
+void drawHand(RenderWindow &window, Vector2f center,
+              float angle, float length, Color color, float thickness)
+{
+    RectangleShape hand({length, thickness});
+    hand.setFillColor(color);
+    hand.setOrigin({0.f, thickness / 2}); // rotate from the base
+    hand.setPosition(center);
+    hand.setRotation(sf::degrees(angle - 90)); // -90 so 0° points up
+    window.draw(hand);
+}
+
+// ============================================================
+// MAIN
+// ============================================================
 int main()
 {
     RenderWindow window(VideoMode({900, 600}), "Clock System");
 
     Stopwatch stopwatch;
-    int tzIndex = 0;
-    bool stopwatchMode = false;
+    int selectedZone = 0;       // index into timezones[]
+    bool stopwatchMode = false; // false = show clock, true = show stopwatch
 
+    // Load font
     Font font;
     if (!font.openFromFile("C:/Windows/Fonts/arial.ttf"))
     {
-        cout << "Font missing!\n";
+        cout << "Could not load font!\n";
         return -1;
     }
 
-    // -------- ANALOG CLOCK (LEFT SIDE) --------
-    Vector2f center(250.f, 300.f);
-    float radius = 200.f;
+    // Analog clock settings
+    Vector2f clockCenter(250.f, 300.f);
+    float clockRadius = 200.f;
 
-    CircleShape clockFace(200);
+    // Draw the clock circle (outline only)
+    CircleShape clockFace(clockRadius);
     clockFace.setFillColor(Color::Transparent);
     clockFace.setOutlineThickness(5);
     clockFace.setOutlineColor(Color::White);
-    clockFace.setPosition({center.x - 200, center.y - 200});
+    clockFace.setPosition({clockCenter.x - clockRadius, clockCenter.y - clockRadius});
 
-    // -------- DIGITAL (RIGHT SIDE) --------
+    // Digital time display (right side)
     Text digitalText(font, "");
     digitalText.setCharacterSize(32);
     digitalText.setFillColor(Color::Green);
     digitalText.setPosition({550.f, 150.f});
 
-    Text infoText(font, "");
-    infoText.setCharacterSize(18);
-    infoText.setFillColor(Color::Yellow);
-    infoText.setPosition({550.f, 300.f});
+    // Controls hint text
+    Text controlsText(font, "");
+    controlsText.setCharacterSize(18);
+    controlsText.setFillColor(Color::Yellow);
+    controlsText.setPosition({550.f, 300.f});
+    controlsText.setString("S: Start/Stop\nR: Reset\nT: Timezone\nSPACE: Mode");
 
+    // ============================================================
+    // MAIN LOOP
+    // ============================================================
     while (window.isOpen())
     {
 
+        // --- Handle input events ---
         while (auto event = window.pollEvent())
         {
-
             if (event->is<Event::Closed>())
                 window.close();
 
@@ -149,7 +183,7 @@ int main()
                     window.close();
 
                 if (key == Keyboard::Key::T)
-                    tzIndex = (tzIndex + 1) % zones.size();
+                    selectedZone = (selectedZone + 1) % timezones.size(); // cycle timezones
 
                 if (key == Keyboard::Key::S)
                     stopwatch.toggle();
@@ -158,80 +192,64 @@ int main()
                     stopwatch.reset();
 
                 if (key == Keyboard::Key::Space)
-                    stopwatchMode = !stopwatchMode;
+                    stopwatchMode = !stopwatchMode; // toggle between clock and stopwatch
             }
         }
 
+        // --- Get current time for this frame ---
+        time_t now = time(nullptr);
+        tm *localTime = gmtime(&now);
+        localTime->tm_hour += timezones[selectedZone].hourOffset;
+        localTime->tm_min += timezones[selectedZone].minOffset;
+        mktime(localTime);
+
+        // Calculate hand angles (in degrees)
+        // Seconds: each second = 6 degrees
+        // Minutes: each minute = 6 degrees + small nudge from seconds
+        // Hours:   each hour   = 30 degrees + small nudge from minutes
+        float secondAngle = localTime->tm_sec * 6.f;
+        float minuteAngle = localTime->tm_min * 6.f + localTime->tm_sec * 0.1f;
+        float hourAngle = (localTime->tm_hour % 12) * 30.f + localTime->tm_min * 0.5f;
+
+        // Update digital display
+        Time stopwatchTime = stopwatch.getElapsed();
+        string timeString = formatTime(timezones[selectedZone], stopwatchMode, stopwatchTime);
+        digitalText.setString(timeString + "\n[" + timezones[selectedZone].name + "]");
+
+        // --- Draw everything ---
         window.clear(Color::Black);
 
-        // -------- TIME --------
-        Time swTime = stopwatch.getTime();
-        string timeStr = formatTime(zones[tzIndex], stopwatchMode, swTime);
+        // Draw clock face outline
+        window.draw(clockFace);
 
-        digitalText.setString(timeStr + "\n[" + zones[tzIndex].name + "]");
-
-        time_t now = time(nullptr);
-        tm *lt = gmtime(&now);
-
-        lt->tm_hour += zones[tzIndex].hourOffset;
-        lt->tm_min += zones[tzIndex].minOffset;
-        mktime(lt);
-
-        float sec = lt->tm_sec * 6;
-        float min = lt->tm_min * 6 + lt->tm_sec * 0.1f;
-        float hr = lt->tm_hour * 30 + lt->tm_min * 0.5f;
-
-        // -------- CLOCK NUMBERS --------
+        // Draw hour numbers (1–12)
         for (int i = 1; i <= 12; i++)
         {
-            float angle = i * 30 * 3.14159265f / 180.f;
+            float angleRad = i * 30.f * 3.14159265f / 180.f;
+            float x = clockCenter.x + cos(angleRad - 3.14159265f / 2) * (clockRadius - 30);
+            float y = clockCenter.y + sin(angleRad - 3.14159265f / 2) * (clockRadius - 30);
 
-            float x = center.x + cos(angle - 3.14159265f / 2) * (radius - 30);
-            float y = center.y + sin(angle - 3.14159265f / 2) * (radius - 30);
-
-            Text num(font, to_string(i));
-            num.setCharacterSize(20);
-            num.setFillColor(Color::White);
-            num.setPosition({x - 10, y - 10});
-
-            window.draw(num);
+            Text numLabel(font, to_string(i));
+            numLabel.setCharacterSize(20);
+            numLabel.setFillColor(Color::White);
+            numLabel.setPosition({x - 10, y - 10});
+            window.draw(numLabel);
         }
 
-        // -------- HANDS --------
-        auto drawHand = [&](float angle, float length, Color color, float thick)
-        {
-            RectangleShape line({length, thick});
-            line.setFillColor(color);
-            line.setOrigin({0.f, thick / 2});
-            line.setPosition(center);
-            line.setRotation(sf::degrees(angle - 90));
-            window.draw(line);
-        };
+        // Draw the three clock hands
+        drawHand(window, clockCenter, hourAngle, 80, Color::White, 6);   // hour
+        drawHand(window, clockCenter, minuteAngle, 120, Color::Cyan, 4); // minute
+        drawHand(window, clockCenter, secondAngle, 150, Color::Red, 2);  // second
 
-        drawHand(hr, 80, Color::White, 6);
-        drawHand(min, 120, Color::Cyan, 4);
-        drawHand(sec, 150, Color::Red, 2);
+        // Draw center dot
+        CircleShape centerDot(5);
+        centerDot.setFillColor(Color::White);
+        centerDot.setPosition({clockCenter.x - 5, clockCenter.y - 5});
+        window.draw(centerDot);
 
-        // -------- CENTER DOT --------
-        CircleShape dot(5);
-        dot.setFillColor(Color::White);
-        dot.setPosition({center.x - 5, center.y - 5});
-
-        // -------- STOPWATCH CONTROLS (UNDER DIGITAL) --------
-        string controls =
-            "S: Start/Stop\n"
-            "R: Reset\n"
-            "T: Timezone\n"
-            "SPACE: Mode";
-
-        infoText.setString(controls);
-
-        // -------- DRAW --------
-        window.draw(clockFace);
-        window.draw(dot);
-
+        // Draw digital text and controls
         window.draw(digitalText);
-        window.draw(infoText);
+        window.draw(controlsText);
 
         window.display();
     }
